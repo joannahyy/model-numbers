@@ -1,0 +1,131 @@
+import sqlite3  # 数据库的库
+import pandas as pd  # 数据处理的库
+
+# 数据库类
+class Database:
+    def __init__(self, db_name='railway_system.db'):
+        self.connection = None
+        self.db_name = db_name
+
+    def connect(self):
+        self.connection = sqlite3.connect(self.db_name)
+
+    def close(self):
+        if self.connection:
+            self.connection.close()
+
+    def create_tables(self):
+        with self.connection:
+            self.connection.execute('''
+                CREATE TABLE IF NOT EXISTS passenger_flow (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    station TEXT,
+                    passengers_in INTEGER,
+                    passengers_out INTEGER,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            self.connection.execute('''
+                CREATE TABLE IF NOT EXISTS facility_repairs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    facility_id TEXT,
+                    issue_description TEXT,
+                    repair_status TEXT,
+                    report_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    fix_timestamp DATETIME
+                )
+            ''')
+
+# 数据湖类
+class DataLake:
+    def __init__(self):
+        self.data = {}
+
+    def upload_data(self, table_name, data_frame):
+        self.data[table_name] = data_frame
+
+    def get_data(self, table_name):
+        return self.data.get(table_name, pd.DataFrame())
+
+# 数据管理平台
+class DataAssetManagementPlatform:
+    def __init__(self):
+        self.database = Database()
+        self.data_lake = DataLake()
+        self.initial_state = None
+
+    def initialize(self):
+        try:
+            self.database.connect()
+            self.database.create_tables()
+            self.initial_state = self.backup_state()
+        except Exception as e:
+            print("Initialization failed:", e)
+
+    def backup_state(self):
+        state = {}
+        tables = ['passenger_flow', 'facility_repairs']
+        for table in tables:
+            query = f"SELECT * FROM {table}"
+            state[table] = pd.read_sql(query, self.database.connection)
+        return state
+
+    def restore_initial_state(self):
+        try:
+            for table, df in self.initial_state.items():
+                df.to_sql(table, self.database.connection, if_exists='replace', index=False)
+        except Exception as e:
+            print("Restoration failed:", e)
+
+    def calculate_turnover_rate(self, start_time, end_time):
+        try:
+            query = f'''
+                SELECT SUM(passengers_in) AS total_in, SUM(passengers_out) AS total_out 
+                FROM passenger_flow
+                WHERE timestamp BETWEEN '{start_time}' AND '{end_time}'
+            '''
+            result = pd.read_sql(query, self.database.connection)
+            if result.empty:
+                return 0
+            total_in, total_out = result.loc[0]
+            turnover_rate = (total_in + total_out) / 2
+            return turnover_rate
+        except Exception as e:
+            print("Error calculating turnover rate:", e)
+            self.restore_initial_state()
+            return 0
+
+    def report_facility_issue(self, facility_id, issue_description):
+        try:
+            with self.database.connection:
+                self.database.connection.execute('''
+                    INSERT INTO facility_repairs (facility_id, issue_description, repair_status)
+                    VALUES (?, ?, ?)
+                ''', (facility_id, issue_description, 'Reported'))
+        except Exception as e:
+            print("Error reporting facility issue:", e)
+            self.restore_initial_state()
+
+    def fix_facility_issue(self, issue_id):
+        try:
+            with self.database.connection:
+                self.database.connection.execute('''
+                    UPDATE facility_repairs
+                    SET repair_status = ?, fix_timestamp = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', ('Fixed', issue_id))
+        except Exception as e:
+            print("Error fixing facility issue:", e)
+            self.restore_initial_state()
+
+# 使用示例
+if __name__ == "__main__":
+    platform = DataAssetManagementPlatform()
+    platform.initialize()
+    platform.report_facility_issue('ESC001', 'Escalator malfunctioning')
+    platform.fix_facility_issue(1)
+
+    turnover_rate = platform.calculate_turnover_rate("2023-01-01", "2023-12-31")
+    print("Turnover Rate:", turnover_rate)
+    
+    platform.database.close()
